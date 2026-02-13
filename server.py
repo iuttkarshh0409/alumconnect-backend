@@ -72,16 +72,42 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 app = FastAPI()
-origins = [
-    "http://localhost:3000",
-    "https://alumconnect-frontend.vercel.app",
-    "https://*.vercel.app",
-]
+
+# Configure CORS from env var `CORS_ORIGINS` (comma-separated) or use sensible defaults.
+# Supports exact origins and simple wildcard host patterns like "https://*.vercel.app".
+_cors_raw = os.environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:3000,https://alumconnect-frontend.vercel.app",
+)
+_cors_list = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+
+# If the only origin is '*' we must NOT allow credentials (browsers reject wildcard with credentials).
+if _cors_list == ["*"]:
+    _allow_origins = ["*"]
+    _allow_origin_regex = None
+    _allow_credentials = False
+else:
+    _allow_origins = []
+    _allow_origin_regex = None
+    _allow_credentials = True
+    for o in _cors_list:
+        if "*" in o:
+            # convert a simple wildcard origin into a regex. Example: https://*.vercel.app -> ^https://.*\.vercel\.app$
+            pattern = o.replace(".", r"\\.").replace("*", r".*")
+            if not pattern.startswith("http"):
+                pattern = r"https?://" + pattern
+            if _allow_origin_regex:
+                _allow_origin_regex = f"({_allow_origin_regex})|({pattern})"
+            else:
+                _allow_origin_regex = f"^{pattern}$"
+        else:
+            _allow_origins.append(o)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=_allow_origins,
+    allow_origin_regex=_allow_origin_regex,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -950,13 +976,7 @@ async def get_conversations(
 
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
