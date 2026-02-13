@@ -75,6 +75,7 @@ app = FastAPI()
 origins = [
     "http://localhost:3000",
     "https://alumconnect-frontend.vercel.app",
+    "https://*.vercel.app",
 ]
 
 app.add_middleware(
