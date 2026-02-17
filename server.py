@@ -78,6 +78,21 @@ api_router = APIRouter()
 def ping():
     return {"message": "pong"}
 
+from fastapi.middleware.cors import CORSMiddleware
+
+origins = [
+    "http://localhost:3000",
+    "https://alumconnect-frontend.vercel.app",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ===== MODELS =====
 
