@@ -91,3 +91,23 @@ frontend/node_modules/.cache/default-development/2.pack
 # Environment files
 *.env
 *.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+
+# IDE
+.vscode/
