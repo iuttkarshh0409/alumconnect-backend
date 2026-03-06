@@ -582,6 +582,28 @@ async def update_request_status(
     
     return updated_request
 
+
+@api_router.delete("/mentorship/requests/{request_id}")
+async def withdraw_mentorship_request(request_id: str, request: Request):
+    user = await get_current_user(request)
+    
+    if user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can withdraw requests")
+    
+    req_doc = await db.mentorship_requests.find_one({"request_id": request_id})
+    if not req_doc:
+        raise HTTPException(status_code=404, detail="Request not found")
+        
+    if req_doc["student_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to withdraw this request")
+        
+    if req_doc["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Only pending requests can be withdrawn")
+    
+    await db.mentorship_requests.delete_one({"request_id": request_id})
+    return {"status": "success", "message": "Request withdrawn successfully"}
+
+
 # ===== MESSAGES ROUTES =====
 
 @api_router.post("/messages")
