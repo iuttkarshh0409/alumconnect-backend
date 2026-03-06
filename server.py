@@ -958,8 +958,8 @@ async def post_alumni_wisdom(request: Request, wisdom_data: WisdomTipRequest):
     if user.role != "alumni":
         raise HTTPException(status_code=403, detail="Only alumni can post wisdom")
     
-    # Use specified directory from user
-    tips_dir = Path("alumni-tips")
+    # Use ROOT_DIR to ensure it's saved in the backend directory
+    tips_dir = ROOT_DIR / "alumni-tips"
     tips_dir.mkdir(exist_ok=True)
     
     # Save the tip to a .txt file
