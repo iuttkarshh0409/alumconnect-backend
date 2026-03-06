@@ -862,18 +862,22 @@ def get_career_progression_levels():
         {"level": "Leadership", "count": 8},
     ]
 
-@app.get("/api/analytics/programs/count")
-def get_programs_count():
+@api_router.get("/analytics/programs/count")
+async def get_programs_count(request: Request):
     """
-    Alumni count by academic program.
-    Mock data for prototype.
+    Real alumni count by academic program (department) within the same institute.
     """
-    return [
-        {"program": "MCA", "count": 65},
-        {"program": "B.Tech", "count": 42},
-        {"program": "M.Tech", "count": 26},
-        {"program": "MBA", "count": 18},
+    user = await get_current_user(request)
+    
+    pipeline = [
+        {"$match": {"institute_id": user.institute_id, "is_verified": True}},
+        {"$group": {"_id": "$department", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 5}
     ]
+    
+    counts = await db.alumni_profiles.aggregate(pipeline).to_list(5)
+    return [{"program": item["_id"], "count": item["count"]} for item in counts]
 
 
 @app.get("/api/analytics/programs/employment-rate")
