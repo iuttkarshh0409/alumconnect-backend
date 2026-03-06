@@ -970,11 +970,26 @@ async def post_alumni_wisdom(request: Request, wisdom_data: WisdomTipRequest):
     await db.wisdom_tips.insert_one(wisdom_tip)
     return {"status": "success", "message": "Wisdom saved to cloud DB"}
 
+@api_router.get("/alumni/wisdom")
 @api_router.get("/student/wisdom")
 async def get_alumni_wisdom(request: Request):
     # Fetch top 10 most recent tips
     tips = await db.wisdom_tips.find({}, {"_id": 0}).sort("created_at", -1).to_list(10)
     return tips
+
+@api_router.get("/alumni/students")
+async def get_institute_students(request: Request):
+    user = await get_current_user(request)
+    if user.role != "alumni":
+        raise HTTPException(status_code=403, detail="Only alumni can view student directory")
+    
+    # Fetch students from the same institute
+    students = await db.users.find(
+        {"institute_id": user.institute_id, "role": "student"},
+        {"_id": 0}
+    ).to_list(1000)
+    
+    return students
 
 @api_router.get("/admin/users")
 async def get_all_users(request: Request, session_token: Optional[str] = Cookie(None)):
