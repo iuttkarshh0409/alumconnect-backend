@@ -958,23 +958,23 @@ async def post_alumni_wisdom(request: Request, wisdom_data: WisdomTipRequest):
     if user.role != "alumni":
         raise HTTPException(status_code=403, detail="Only alumni can post wisdom")
     
-    # Use ROOT_DIR to ensure it's saved in the backend directory
-    tips_dir = ROOT_DIR / "alumni-tips"
-    tips_dir.mkdir(exist_ok=True)
+    wisdom_tip = {
+        "tip_id": str(uuid.uuid4()),
+        "user_id": user.user_id,
+        "author_name": user.name,
+        "author_company": user.picture, # Just in case we need thumbnail
+        "text": wisdom_data.wisdom,
+        "created_at": datetime.now(timezone.utc)
+    }
     
-    # Save the tip to a .txt file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = f"tip_{user.user_id}_{timestamp}.txt"
-    file_path = tips_dir / file_name
-    
-    with open(file_path, "w") as f:
-        f.write(f"Alumnus: {user.name}\n")
-        f.write(f"UserID: {user.user_id}\n")
-        f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-        f.write("-" * 20 + "\n")
-        f.write(wisdom_data.wisdom)
-        
-    return {"status": "success", "message": "Wisdom saved to file"}
+    await db.wisdom_tips.insert_one(wisdom_tip)
+    return {"status": "success", "message": "Wisdom saved to cloud DB"}
+
+@api_router.get("/student/wisdom")
+async def get_alumni_wisdom(request: Request):
+    # Fetch top 10 most recent tips
+    tips = await db.wisdom_tips.find({}, {"_id": 0}).sort("created_at", -1).to_list(10)
+    return tips
 
 @api_router.get("/admin/users")
 async def get_all_users(request: Request, session_token: Optional[str] = Cookie(None)):
