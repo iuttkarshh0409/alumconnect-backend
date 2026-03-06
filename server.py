@@ -1,5 +1,4 @@
 from jose import jwt
-# Deployment Marker: ALUM-CONNECT-V2-ALUMNI-STUDENT-DIRECTORY
 from jose.exceptions import JWTError
 import requests
 from fastapi import FastAPI, APIRouter, HTTPException, Cookie, Response, Request
@@ -978,19 +977,6 @@ async def get_alumni_wisdom(request: Request):
     tips = await db.wisdom_tips.find({}, {"_id": 0}).sort("created_at", -1).to_list(10)
     return tips
 
-@api_router.get("/alumni/students")
-async def get_institute_students(request: Request):
-    user = await get_current_user(request)
-    if user.role != "alumni":
-        raise HTTPException(status_code=403, detail="Only alumni can view student directory")
-    
-    # Fetch students from the same institute
-    students = await db.users.find(
-        {"institute_id": user.institute_id, "role": "student"},
-        {"_id": 0}
-    ).to_list(1000)
-    
-    return students
 
 @api_router.get("/admin/users")
 async def get_all_users(request: Request, session_token: Optional[str] = Cookie(None)):
