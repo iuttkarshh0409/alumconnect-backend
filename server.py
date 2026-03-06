@@ -111,6 +111,7 @@ class User(BaseModel):
     institute_id: Optional[str] = None
     department: Optional[str] = None
     created_at: datetime
+    last_active: Optional[datetime] = None
 
 class AlumniProfile(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -242,6 +243,7 @@ async def get_current_user(request: Request) -> User:
             "institute_id": user_doc.get("institute_id") if user_doc else None,
             "department": user_doc.get("department") if user_doc else None,
             "created_at": user_doc.get("created_at") if user_doc else datetime.now(timezone.utc),
+            "last_active": datetime.now(timezone.utc),
         }
 
         await db.users.update_one(
@@ -249,6 +251,19 @@ async def get_current_user(request: Request) -> User:
             {"$set": user_doc},
             upsert=True
         )
+    else:
+        # Update last_active for existing user
+        last_active = datetime.now(timezone.utc)
+        await db.users.update_one(
+            {"user_id": clerk_user_id},
+            {"$set": {"last_active": last_active}}
+        )
+        user_doc["last_active"] = last_active
+
+    if isinstance(user_doc.get("created_at"), str):
+        user_doc["created_at"] = datetime.fromisoformat(user_doc["created_at"])
+    if isinstance(user_doc.get("last_active"), str):
+        user_doc["last_active"] = datetime.fromisoformat(user_doc["last_active"])
 
     return User(**user_doc)
 
@@ -753,6 +768,23 @@ async def get_alumni_spotlight(request: Request, session_token: Optional[str] = 
         profile["user"] = user_doc
     
     return spotlight_alumni
+
+
+@api_router.get("/student/stats")
+async def get_student_dashboard_stats(request: Request):
+    user = await get_current_user(request)
+    
+    # Get verified alumni count in the same institute
+    verified_count = await db.alumni_profiles.count_documents({
+        "institute_id": user.institute_id,
+        "is_verified": True
+    })
+    
+    return {
+        "verified_alumni_count": verified_count,
+        "last_active": user.last_active
+    }
+
 
 @app.get("/api/analytics/employment/status")
 def get_employment_status():
