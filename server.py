@@ -182,6 +182,9 @@ class CreateMentorshipRequest(BaseModel):
 class UpdateRequestStatus(BaseModel):
     status: str  # accepted, rejected
 
+class WisdomTipRequest(BaseModel):
+    wisdom: str
+
 class SendMessageRequest(BaseModel): #create table SendMessageRequest(conversation_id TEXT, content TEXT);
     conversation_id: str
     content: str
@@ -947,6 +950,31 @@ async def sync_linkedin_photo(request: Request):
     except Exception as e:
         print(f"Sync error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error during sync")
+
+@api_router.post("/alumni/wisdom")
+async def post_alumni_wisdom(request: Request, wisdom_data: WisdomTipRequest):
+    user = await get_current_user(request)
+    
+    if user.role != "alumni":
+        raise HTTPException(status_code=403, detail="Only alumni can post wisdom")
+    
+    # Use specified directory from user
+    tips_dir = Path("alumni-tips")
+    tips_dir.mkdir(exist_ok=True)
+    
+    # Save the tip to a .txt file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name = f"tip_{user.user_id}_{timestamp}.txt"
+    file_path = tips_dir / file_name
+    
+    with open(file_path, "w") as f:
+        f.write(f"Alumnus: {user.name}\n")
+        f.write(f"UserID: {user.user_id}\n")
+        f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+        f.write("-" * 20 + "\n")
+        f.write(wisdom_data.wisdom)
+        
+    return {"status": "success", "message": "Wisdom saved to file"}
 
 @api_router.get("/admin/users")
 async def get_all_users(request: Request, session_token: Optional[str] = Cookie(None)):
