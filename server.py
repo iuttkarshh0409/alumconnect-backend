@@ -399,6 +399,45 @@ async def get_alumni(
     
     return alumni_with_users
 
+# ===== TALENT RADAR (Prioritized above generic {user_id} routes) =====
+@api_router.get("/alumni/talent-radar")
+async def get_talent_radar(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role != "alumni":
+        raise HTTPException(status_code=403, detail="Only alumni can access talent radar")
+    
+    # Get alumnus profile to match against
+    alumnus = await db.alumni_profiles.find_one({"user_id": user.user_id})
+    if not alumnus or not alumnus.get("department"):
+        return []
+    
+    # CASE-INSENSITIVE SEARCH: Match "MCA" regardless of casing
+    query = {"department": {"$regex": f"^{alumnus['department']}$", "$options": "i"}}
+    
+    students_docs = await db.students.find(query, {"_id": 0}).limit(10).to_list(10)
+    
+    radar_data = []
+    for s in students_docs:
+        # Don't show the alumnus themselves if they are also in the students collection (unlikely but safe)
+        if s["user_id"] == user.user_id: continue
+            
+        s_user = await db.users.find_one({"user_id": s["user_id"]}, {"_id": 0})
+        if s_user:
+            # Use a stable seed based on user_id for radar coordinates
+            seed = sum(ord(c) for c in s["user_id"])
+            radar_data.append({
+                "user_id": s["user_id"],
+                "name": s_user["name"],
+                "picture": s_user.get("picture"),
+                "department": s["department"],
+                "grad_year": s["graduation_year"],
+                "match_score": 85 + (seed % 15),
+                "distance": 0.3 + (seed % 60) / 100, 
+                "angle": seed % 360 
+            })
+            
+    return radar_data
+
 @api_router.get("/alumni/{user_id}")
 async def get_alumni_profile(user_id: str, request: Request, session_token: Optional[str] = Cookie(None)):
     await get_current_user(request)
@@ -1131,44 +1170,6 @@ async def get_conversations(
 
     return conversations
 
-# ===== TALENT RADAR =====
-@api_router.get("/alumni/talent-radar")
-async def get_talent_radar(request: Request):
-    user = await get_current_user(request)
-    if not user or user.role != "alumni":
-        raise HTTPException(status_code=403, detail="Only alumni can access talent radar")
-    
-    # Get alumnus profile to match against
-    alumnus = await db.alumni_profiles.find_one({"user_id": user.user_id})
-    if not alumnus or not alumnus.get("department"):
-        return []
-    
-    # CASE-INSENSITIVE SEARCH: Match "MCA" regardless of casing
-    query = {"department": {"$regex": f"^{alumnus['department']}$", "$options": "i"}}
-    
-    students_docs = await db.students.find(query, {"_id": 0}).limit(10).to_list(10)
-    
-    radar_data = []
-    for s in students_docs:
-        # Don't show the alumnus themselves if they are also in the students collection (unlikely but safe)
-        if s["user_id"] == user.user_id: continue
-            
-        s_user = await db.users.find_one({"user_id": s["user_id"]}, {"_id": 0})
-        if s_user:
-            # Use a stable seed based on user_id for radar coordinates
-            seed = sum(ord(c) for c in s["user_id"])
-            radar_data.append({
-                "user_id": s["user_id"],
-                "name": s_user["name"],
-                "picture": s_user.get("picture"),
-                "department": s["department"],
-                "grad_year": s["graduation_year"],
-                "match_score": 85 + (seed % 15),
-                "distance": 0.3 + (seed % 60) / 100, 
-                "angle": seed % 360 
-            })
-            
-    return radar_data
 
 
 app.include_router(api_router)
