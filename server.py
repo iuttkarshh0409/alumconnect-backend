@@ -1134,6 +1134,42 @@ async def get_conversations(
     return conversations
 
 
+@api_router.get("/alumni/talent-radar")
+async def get_talent_radar(request: Request):
+    user = await get_current_user(request)
+    if not user or user.role != "alumni":
+        raise HTTPException(status_code=403, detail="Only alumni can access talent radar")
+    
+    # Get alumnus profile to match against
+    alumnus = await db.alumni_profiles.find_one({"user_id": user.user_id})
+    if not alumnus:
+        return []
+    
+    # Search for students in the same department
+    students_docs = await db.student_profiles.find(
+        {"department": alumnus["department"]},
+        {"_id": 0}
+    ).limit(10).to_list(10)
+    
+    radar_data = []
+    for s in students_docs:
+        s_user = await db.users.find_one({"user_id": s["user_id"]}, {"_id": 0})
+        if s_user:
+            # Mock AI Match Logic for distance and angle on radar
+            radar_data.append({
+                "user_id": s["user_id"],
+                "name": s_user["name"],
+                "picture": s_user.get("picture"),
+                "department": s["department"],
+                "grad_year": s["graduation_year"],
+                "match_score": 85 + (hash(s["user_id"]) % 15), # 85-100%
+                "distance": 0.3 + (abs(hash(s["user_id"])) % 60) / 100, # Radial distance
+                "angle": abs(hash(s["user_id"])) % 360 # Orbit angle
+            })
+            
+    return radar_data
+
+
 app.include_router(api_router)
 
 
