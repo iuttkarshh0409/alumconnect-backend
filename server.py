@@ -4,15 +4,14 @@ import requests
 from fastapi import FastAPI, APIRouter, HTTPException, Cookie, Response, Request
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import uuid
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional
-import uuid
 from datetime import datetime, timezone, timedelta
 import httpx
 
@@ -76,18 +75,17 @@ api_router = APIRouter(prefix="/api")
 
 @app.get("/ping")
 def ping():
-    return {"message": "pong"}
+    return {"message": "pong", "signal": "RADAR_READY_V2"}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-from fastapi.middleware.cors import CORSMiddleware
-
 origins = [
     "http://localhost:3000",
     "https://alumconnect-frontend.vercel.app",
+    "https://alumconnect-frontend.onrender.app", # Added Render if needed
 ]
 
 app.add_middleware(
