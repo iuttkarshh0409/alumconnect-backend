@@ -1145,8 +1145,8 @@ async def get_talent_radar(request: Request):
     if not alumnus:
         return []
     
-    # Search for students in the same department
-    students_docs = await db.student_profiles.find(
+    # Search for students in the same department (Fix: used 'students' instead of 'student_profiles')
+    students_docs = await db.students.find(
         {"department": alumnus["department"]},
         {"_id": 0}
     ).limit(10).to_list(10)
