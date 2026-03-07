@@ -127,6 +127,8 @@ class AlumniProfile(BaseModel):
     linkedin_url: Optional[str] = None
     is_verified: bool = False
     is_claimed: bool = False
+    open_to_refer: bool = False
+    is_live: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -173,6 +175,8 @@ class AlumniProfileUpdate(BaseModel):
     skills: Optional[List[str]] = None
     bio: Optional[str] = None
     linkedin_url: Optional[str] = None
+    open_to_refer: Optional[bool] = None
+    is_live: Optional[bool] = None
 
 class CreateMentorshipRequest(BaseModel):
     mentor_id: str
@@ -948,9 +952,83 @@ async def post_alumni_wisdom(request: Request, wisdom_data: WisdomTipRequest):
 @api_router.get("/alumni/wisdom")
 @api_router.get("/student/wisdom")
 async def get_alumni_wisdom(request: Request):
+    user = await get_current_user(request)
     # Fetch top 10 most recent tips
     tips = await db.wisdom_tips.find({}, {"_id": 0}).sort("created_at", -1).to_list(10)
+    
+    # Process tips to add high-five counts and user status
+    for tip in tips:
+        applauds = tip.get("applauds", [])
+        tip["applauds_count"] = len(applauds)
+        tip["has_applauded"] = user.user_id in applauds if user else False
+        # Remove raw applauds list to keep response clean
+        if "applauds" in tip:
+            del tip["applauds"]
+            
     return tips
+
+@api_router.post("/wisdom/{tip_id}/high-five")
+async def toggle_high_five(tip_id: str, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+        
+    tip = await db.wisdom_tips.find_one({"tip_id": tip_id})
+    if not tip:
+        raise HTTPException(status_code=404, detail="Tip not found")
+        
+    applauds = tip.get("applauds", [])
+    if user.user_id in applauds:
+        # Remove high-five
+        await db.wisdom_tips.update_one(
+            {"tip_id": tip_id},
+            {"$pull": {"applauds": user.user_id}}
+        )
+        return {"status": "un-high-fived"}
+    else:
+        # Add high-five
+        await db.wisdom_tips.update_one(
+            {"tip_id": tip_id},
+            {"$push": {"applauds": user.user_id}}
+        )
+        return {"status": "high-fived"}
+
+@api_router.post("/alumni/toggle-live")
+async def toggle_live_status(request: Request):
+    user = await get_current_user(request)
+    if user.role != "alumni":
+        raise HTTPException(status_code=403, detail="Only alumni can toggle live status")
+        
+    profile = await db.alumni_profiles.find_one({"user_id": user.user_id})
+    new_status = not profile.get("is_live", False)
+    
+    await db.alumni_profiles.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"is_live": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    return {"status": "success", "is_live": new_status}
+
+@api_router.get("/alumni/stats/me")
+async def get_my_alumni_stats(request: Request):
+    user = await get_current_user(request)
+    if user.role != "alumni":
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    # Total High-Fives across all wisdom tips by this user
+    tips = await db.wisdom_tips.find({"user_id": user.user_id}).to_list(100)
+    total_high_fives = sum(len(tip.get("applauds", [])) for tip in tips)
+    
+    # Mentorship stats
+    accepted = await db.mentorship_requests.count_documents({"mentor_id": user.user_id, "status": "accepted"})
+    pending = await db.mentorship_requests.count_documents({"mentor_id": user.user_id, "status": "pending"})
+    
+    return {
+        "total_high_fives": total_high_fives,
+        "accepted_sessions": accepted,
+        "pending_requests": pending,
+        "is_live": (await db.alumni_profiles.find_one({"user_id": user.user_id})).get("is_live", False)
+    }
 
 
 @api_router.get("/admin/users")
