@@ -182,6 +182,9 @@ class CreateMentorshipRequest(BaseModel):
 class UpdateRequestStatus(BaseModel):
     status: str  # accepted, rejected
 
+class PhotoUpdate(BaseModel):
+    picture: str
+
 class WisdomTipRequest(BaseModel):
     wisdom: str
 
@@ -909,47 +912,19 @@ def get_employment_trends():
 
 # ===== ADMIN ROUTES =====
 
-@api_router.post("/alumni/sync-linkedin-photo")
-async def sync_linkedin_photo(request: Request):
+@api_router.post("/alumni/update-photo")
+async def update_profile_photo(request: Request, photo_data: PhotoUpdate):
     user = await get_current_user(request)
     
-    if user.role != "alumni":
-        raise HTTPException(status_code=403, detail="Only alumni can sync LinkedIn photos")
-    
-    try:
-        # Fetch detailed user info from Clerk
-        clerk_user = await fetch_clerk_user(user.user_id)
-        
-        # 1. Try to find the image specifically in the LinkedIn external account
-        new_picture = None
-        external_accounts = clerk_user.get("external_accounts", [])
-        for account in external_accounts:
-            if account.get("provider") == "oauth_linkedin" or account.get("provider") == "linkedin":
-                new_picture = account.get("picture") or account.get("image_url")
-                if new_picture:
-                    break
-        
-        # 2. Fallback to top-level Clerk image
-        if not new_picture:
-            new_picture = clerk_user.get("image_url") or clerk_user.get("profile_image_url")
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
-        if new_picture:
-            # Update the user collection
-            await db.users.update_one(
-                {"user_id": user.user_id},
-                {"$set": {"picture": new_picture}}
-            )
-            
-            # Also update any cached picture in the dashboard-specific state if needed
-            # (The frontend will handle the immediate UI update)
-            
-            return {"status": "success", "picture": new_picture}
-        else:
-            return {"status": "no_change", "message": "No LinkedIn account or photo found in your profile."}
-            
-    except Exception as e:
-        print(f"Sync error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error during sync")
+    await db.users.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"picture": photo_data.picture}}
+    )
+    
+    return {"status": "success", "picture": photo_data.picture}
 
 @api_router.post("/alumni/wisdom")
 async def post_alumni_wisdom(request: Request, wisdom_data: WisdomTipRequest):
