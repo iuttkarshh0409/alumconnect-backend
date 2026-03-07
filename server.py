@@ -395,7 +395,19 @@ async def get_alumni(
         if user_doc:
             if isinstance(user_doc.get("created_at"), str):
                 user_doc["created_at"] = datetime.fromisoformat(user_doc["created_at"])
-            alumni_with_users.append({**profile, "user": user_doc})
+            
+            # Feature 3: Inject latest wisdom snippet
+            latest_wisdom = await db.wisdom_tips.find_one(
+                {"user_id": profile["user_id"]},
+                {"text": 1, "_id": 0},
+                sort=[("created_at", -1)]
+            )
+            
+            alumni_with_users.append({
+                **profile, 
+                "user": user_doc,
+                "latest_wisdom": latest_wisdom.get("text") if latest_wisdom else None
+            })
     
     return alumni_with_users
 
