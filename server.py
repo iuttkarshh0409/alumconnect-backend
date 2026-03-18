@@ -776,11 +776,12 @@ async def send_message(
         {"_id": 0}
     )
 
+    broadcast_msg = {**saved_message}
+
     saved_message["created_at"] = datetime.fromisoformat(saved_message["created_at"])
     
-    # Broadcast to websocket subscribers
     if 'manager' in globals():
-        await manager.broadcast(saved_message, payload.conversation_id)
+        await manager.broadcast(broadcast_msg, payload.conversation_id)
         
     return saved_message
 
@@ -952,9 +953,6 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str, token: 
                     
                     # Create clean payload and broadcast
                     clean_msg = {**message_doc}
-                    if isinstance(clean_msg.get("created_at"), str):
-                        clean_msg["created_at"] = datetime.fromisoformat(clean_msg["created_at"])
-                        
                     await manager.broadcast(clean_msg, conversation_id)
             except Exception:
                 pass  # Ignore invalid formats
