@@ -963,6 +963,8 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str, token: 
                     
                     # Create clean payload and broadcast
                     clean_msg = {**message_doc}
+                    if "_id" in clean_msg:
+                        del clean_msg["_id"]
                     await manager.broadcast(clean_msg, conversation_id)
             except Exception:
                 pass  # Ignore invalid formats
