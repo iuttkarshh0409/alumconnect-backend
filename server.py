@@ -82,6 +82,20 @@ def health():
     return {"status": "ok"}
 
 
+@app.on_event("startup")
+async def create_indexes():
+    """Initialize DB indexes for optimizing messaging search flows."""
+    # Conversations
+    await db.conversations.create_index([("student_id", 1)])
+    await db.conversations.create_index([("mentor_id", 1)])
+    await db.conversations.create_index([("institute_id", 1)])
+    
+    # Messages
+    await db.messages.create_index([("conversation_id", 1), ("created_at", 1)])
+    await db.messages.create_index([("conversation_id", 1), ("receiver_id", 1), ("read_at", 1)])
+
+
+
 origins = [
     "http://localhost:3000",
     "https://alumconnect-frontend.vercel.app",
@@ -292,6 +306,38 @@ def generate_message_id() -> str:
     return f"msg_{uuid.uuid4().hex[:12]}"
 
 
+
+
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+class ConnectionManager:
+    def __init__(self):
+        # Maps conversation_id -> list of WebSockets
+        self.active_connections: dict[str, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, conversation_id: str):
+        await websocket.accept()
+        if conversation_id not in self.active_connections:
+            self.active_connections[conversation_id] = []
+        self.active_connections[conversation_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, conversation_id: str):
+        if conversation_id in self.active_connections:
+            if websocket in self.active_connections[conversation_id]:
+                self.active_connections[conversation_id].remove(websocket)
+            if not self.active_connections[conversation_id]:
+                del self.active_connections[conversation_id]
+
+    async def broadcast(self, message: dict, conversation_id: str):
+        if conversation_id in self.active_connections:
+            for connection in self.active_connections[conversation_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+manager = ConnectionManager()
 
 
 
@@ -714,7 +760,14 @@ async def send_message(
     # UPDATE CONVERSATION
     await db.conversations.update_one(
         {"conversation_id": payload.conversation_id},
-        {"$set": {"last_message_at": message_doc["created_at"]}}
+        {"$set": {
+            "last_message_at": message_doc["created_at"],
+            "last_message": {
+                "content": payload.content,
+                "sender_id": user.user_id,
+                "created_at": message_doc["created_at"]
+            }
+        }}
     )
 
     # FETCH CLEAN VERSION (NO ObjectId)
@@ -724,6 +777,11 @@ async def send_message(
     )
 
     saved_message["created_at"] = datetime.fromisoformat(saved_message["created_at"])
+    
+    # Broadcast to websocket subscribers
+    if 'manager' in globals():
+        await manager.broadcast(saved_message, payload.conversation_id)
+        
     return saved_message
 
 
@@ -742,8 +800,11 @@ async def get_messages(
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
+    if user.user_id not in [convo["student_id"], convo["mentor_id"]]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
     #AUTO MARK MESSAGES AS READ (receiver only)
-    await db.messages.update_many(
+    result = await db.messages.update_many(
         {
             "conversation_id": conversation_id,
             "receiver_id": user.user_id,
@@ -754,8 +815,12 @@ async def get_messages(
         }
     )
 
-    if user.user_id not in [convo["student_id"], convo["mentor_id"]]:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if result.modified_count > 0 and 'manager' in globals():
+        await manager.broadcast({
+            "type": "read_receipt",
+            "reader_id": user.user_id,
+            "conversation_id": conversation_id
+        }, conversation_id)
 
     messages = await db.messages.find(
         {"conversation_id": conversation_id},
@@ -799,11 +864,102 @@ async def mark_messages_read(
         {"$set": {"read_at": now}}
     )
 
+    if result.modified_count > 0 and 'manager' in globals():
+        await manager.broadcast({
+            "type": "read_receipt",
+            "reader_id": user.user_id,
+            "conversation_id": conversation_id
+        }, conversation_id)
+
     return {
         "conversation_id": conversation_id,
         "marked_read": result.modified_count
     }
 
+
+
+# ===== WEBSOCKET SUPPORT =====
+
+@app.websocket("/ws/{conversation_id}")
+async def websocket_endpoint(websocket: WebSocket, conversation_id: str, token: str):
+    """
+    WebSocket endpoint for real-time messaging.
+    Connect via: /ws/{conversation_id}?token={clerk_token}
+    """
+    # 1. Authenticate via token
+    try:
+        jwks = get_clerk_jwks()
+        payload = jwt.decode(
+            token,
+            jwks,
+            algorithms=["RS256"],
+            issuer=CLERK_ISSUER,
+            options={"verify_aud": False},
+        )
+        user_id = payload["sub"]
+    except Exception:
+        await websocket.close(code=1008)  # Policy violation
+        return
+
+    # 2. Check conversation access
+    convo = await db.conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
+    if not convo:
+        await websocket.close(code=1008)
+        return
+
+    if user_id not in [convo["student_id"], convo["mentor_id"]]:
+        await websocket.close(code=1008)
+        return
+
+    # 3. Add to Connection Manager
+    await manager.connect(websocket, conversation_id)
+
+    try:
+        while True:
+            # Handle incoming messages via WebSocket (Bidirectional)
+            data = await websocket.receive_text()
+            try:
+                import json
+                payload_data = json.loads(data)
+                content = payload_data.get("content")
+                
+                if content:
+                    receiver_id = convo["mentor_id"] if user_id == convo["student_id"] else convo["student_id"]
+                    
+                    message_doc = {
+                        "message_id": generate_message_id(),
+                        "conversation_id": conversation_id,
+                        "sender_id": user_id,
+                        "receiver_id": receiver_id,
+                        "content": content,
+                        "message_type": "text",
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "read_at": None
+                    }
+                    
+                    await db.messages.insert_one(message_doc)
+                    await db.conversations.update_one(
+                        {"conversation_id": conversation_id},
+                        {"$set": {
+                            "last_message_at": message_doc["created_at"],
+                            "last_message": {
+                                "content": content,
+                                "sender_id": user_id,
+                                "created_at": message_doc["created_at"]
+                            }
+                        }}
+                    )
+                    
+                    # Create clean payload and broadcast
+                    clean_msg = {**message_doc}
+                    if isinstance(clean_msg.get("created_at"), str):
+                        clean_msg["created_at"] = datetime.fromisoformat(clean_msg["created_at"])
+                        
+                    await manager.broadcast(clean_msg, conversation_id)
+            except Exception:
+                pass  # Ignore invalid formats
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, conversation_id)
 
 
 # ===== ANALYTICS ROUTES =====
@@ -1188,7 +1344,34 @@ async def get_conversations(
         {"_id": 0}
     ).sort("created_at", -1).to_list(100)
 
-    return conversations
+    enriched_conversations = []
+    for convo in conversations:
+        # 1. Provide Unread count
+        if user.user_id in [convo["student_id"], convo["mentor_id"]]:
+            unread_count = await db.messages.count_documents({
+                "conversation_id": convo["conversation_id"],
+                "receiver_id": user.user_id,
+                "read_at": None
+            })
+            convo["unread_count"] = unread_count
+        else:
+            convo["unread_count"] = 0
+
+        # 2. Inject Other Participant details
+        if user.role != "admin":
+            other_user_id = convo["mentor_id"] if user.user_id == convo["student_id"] else convo["student_id"]
+            other_user = await db.users.find_one({"user_id": other_user_id}, {"_id": 0, "name": 1, "picture": 1, "role": 1})
+            convo["other_participant"] = other_user
+        else:
+            # For admin diagnostics
+            student = await db.users.find_one({"user_id": convo["student_id"]}, {"_id": 0, "name": 1, "picture": 1})
+            mentor = await db.users.find_one({"user_id": convo["mentor_id"]}, {"_id": 0, "name": 1, "picture": 1})
+            convo["student"] = student
+            convo["mentor"] = mentor
+
+        enriched_conversations.append(convo)
+
+    return enriched_conversations
 
 
 
