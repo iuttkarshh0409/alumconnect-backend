@@ -922,8 +922,18 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str, token: 
             try:
                 import json
                 payload_data = json.loads(data)
-                content = payload_data.get("content")
+                msg_type = payload_data.get("type", "message")
                 
+                if msg_type == "typing":
+                    await manager.broadcast({
+                        "type": "typing",
+                        "sender_id": user_id,
+                        "is_typing": payload_data.get("is_typing", False),
+                        "conversation_id": conversation_id
+                    }, conversation_id)
+                    continue
+                
+                content = payload_data.get("content")
                 if content:
                     receiver_id = convo["mentor_id"] if user_id == convo["student_id"] else convo["student_id"]
                     
