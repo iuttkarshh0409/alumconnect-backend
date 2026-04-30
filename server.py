@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import httpx
+from groq import Groq
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -70,7 +72,27 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# Initialize Groq client
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+groq_client = None
+if GROQ_API_KEY:
+    groq_client = Groq(api_key=GROQ_API_KEY)
+else:
+    print("WARNING: GROQ_API_KEY not found in environment variables.")
+
+
 app = FastAPI()
+
+# CORS Configuration
+origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 api_router = APIRouter(prefix="/api")
 
 @app.get("/ping")
@@ -93,22 +115,6 @@ async def create_indexes():
     # Messages
     await db.messages.create_index([("conversation_id", 1), ("created_at", 1)])
     await db.messages.create_index([("conversation_id", 1), ("receiver_id", 1), ("read_at", 1)])
-
-
-
-origins = [
-    "http://localhost:3000",
-    "https://alumconnect-frontend.vercel.app",
-    "https://alumconnect-frontend.onrender.app", # Added Render if needed
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 # ===== MODELS =====
@@ -1384,10 +1390,67 @@ async def get_conversations(
     return enriched_conversations
 
 
+# ===== CHATBOT MODULE =====
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+
+SYSTEM_PROMPT = """
+You are AlumAssist, an experienced alumni mentor.
+
+IDENTITY:
+- Friendly but brutally honest
+- Direct, practical, and grounded
+- No fluff, no motivational nonsense
+
+PRIMARY PURPOSE:
+- Help students with:
+  - Career guidance
+  - Skills roadmap
+  - Internship advice
+  - Project suggestions
+  - Career switching
+  - Career switching
+
+CORE RULES:
+- Do NOT act like a general AI assistant
+- Do NOT answer unrelated questions
+- Do NOT ask personal questions
+- Avoid generic or vague answers
+
+RESPONSE BEHAVIOR:
+- Structure & Formatting: Use bullet points, keep it clean.
+- Answer Depth: Direct for simple, step-by-step for complex.
+- Decision Making: Recommend ONE practical direction if user is confused.
+- Tone: Slightly assertive, senior-to-junior vibe.
+"""
+
+@api_router.post("/chat")
+async def chatbot_endpoint(request: ChatRequest):
+    if not groq_client:
+        raise HTTPException(status_code=503, detail="Chat service currently unavailable (API key missing)")
+    
+    formatted_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in request.messages:
+        if msg.role != "system":
+            formatted_messages.append({"role": msg.role, "content": msg.content})
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=formatted_messages
+        )
+        reply = response.choices[0].message.content
+        return {"reply": reply}
+    except Exception as e:
+        logging.error(f"Chatbot error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to get response from AI")
 
 app.include_router(api_router)
-
-
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
