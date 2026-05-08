@@ -20,57 +20,8 @@ from groq import Groq
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-CLERK_API_BASE = "https://api.clerk.com/v1"
-CLERK_SECRET_KEY = os.environ["CLERK_SECRET_KEY"]
-
-
-async def fetch_clerk_user(clerk_user_id: str) -> dict:
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{CLERK_API_BASE}/users/{clerk_user_id}",
-            headers={
-                "Authorization": f"Bearer {CLERK_SECRET_KEY}"
-            }
-        )
-
-        if resp.status_code != 200:
-            raise HTTPException(status_code=401, detail="Unable to fetch Clerk user")
-
-        return resp.json()
-
-CLERK_ISSUER = os.environ["CLERK_ISSUER"]
-CLERK_JWKS_URL = f"{CLERK_ISSUER}/.well-known/jwks.json"
-
-_jwks_cache = None
-
-def get_clerk_public_key(token: str):
-    unverified_header = jwt.get_unverified_header(token)
-    kid = unverified_header.get("kid")
-
-    if not kid:
-        raise HTTPException(status_code=401, detail="Invalid token header")
-
-    jwks = get_clerk_jwks()
-
-    for key in jwks["keys"]:
-        if key["kid"] == kid:
-            return key
-
-    raise HTTPException(status_code=401, detail="Public key not found")
-
-
-def get_clerk_jwks():
-    global _jwks_cache
-    if _jwks_cache is None:
-        resp = requests.get(CLERK_JWKS_URL)
-        resp.raise_for_status()
-        _jwks_cache = resp.json()
-    return _jwks_cache
-
-
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from core.database import db
+from core.auth import get_current_user, User
 
 # Initialize Groq client
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -81,7 +32,12 @@ else:
     print("WARNING: GROQ_API_KEY not found in environment variables.")
 
 
+from app.community.core.socket import socket_app
+
 app = FastAPI()
+
+# Mount Socket.io app at /socket.io
+app.mount("/socket.io", socket_app)
 
 # CORS Configuration
 origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -93,7 +49,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.community.api import posts as community_posts, comments as community_comments
+
 api_router = APIRouter(prefix="/api")
+
+# Community Routes
+api_router.include_router(community_posts.router, prefix="/community/posts", tags=["community"])
+api_router.include_router(community_comments.router, prefix="/community/posts", tags=["community"])
 
 @app.get("/ping")
 def ping():
@@ -119,17 +81,7 @@ async def create_indexes():
 
 # ===== MODELS =====
 
-class User(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    user_id: str
-    email: EmailStr
-    name: str
-    picture: Optional[str] = None
-    role: Optional[str] = None  # student, alumni, admin
-    institute_id: Optional[str] = None
-    department: Optional[str] = None
-    created_at: datetime
-    last_active: Optional[datetime] = None
+# User model is now in core.models
 
 class AlumniProfile(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -218,90 +170,7 @@ class SendMessageRequest(BaseModel): #create table SendMessageRequest(conversati
 
 
 # ===== HELPER FUNCTIONS =====
-async def get_current_user(request: Request) -> User:
-    auth_header = request.headers.get("Authorization")
-    print("AUTH HEADER RECEIVED:", auth_header)
-
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-
-    token = auth_header.replace("Bearer ", "")
-
-    try:
-        jwks = get_clerk_jwks()
-        payload = jwt.decode(
-            token,
-            jwks,
-            algorithms=["RS256"],
-            issuer=CLERK_ISSUER,
-            options={"verify_aud": False},
-        )
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid Clerk token")
-
-    clerk_user_id = payload["sub"]
-
-    # 1️⃣ Try DB first
-    user_doc = await db.users.find_one({"user_id": clerk_user_id}, {"_id": 0})
-
-    # 2️⃣ If missing OR broken (email missing) → fetch from Clerk
-    if not user_doc or not user_doc.get("email"):
-        clerk_user = await fetch_clerk_user(clerk_user_id)
-
-        email = None
-        if clerk_user.get("email_addresses"):
-            email = clerk_user["email_addresses"][0].get("email_address")
-
-        if not email:
-            raise HTTPException(
-                status_code=400,
-                detail="No email associated with Clerk user"
-            )
-
-        name = (
-            f"{clerk_user.get('first_name', '')} {clerk_user.get('last_name', '')}"
-        ).strip()
-
-        # ADMINISTRATIVE SENTINEL: Hard-code admin privileges for Lead Analyst
-        is_master_admin = email == "utkarsh0907.edu@gmail.com"
-        assigned_role = "admin" if is_master_admin else (user_doc.get("role") if user_doc else None)
-        assigned_inst = "inst_IIPS" if is_master_admin else (user_doc.get("institute_id") if user_doc else None)
-
-        user_doc = {
-            "user_id": clerk_user_id,
-            "email": email,
-            "name": name or email.split("@")[0],
-            "picture": clerk_user.get("image_url"),
-            "role": assigned_role,
-            "institute_id": assigned_inst,
-            "department": user_doc.get("department") if user_doc else None,
-            "created_at": user_doc.get("created_at") if user_doc else datetime.now(timezone.utc),
-            "last_active": datetime.now(timezone.utc),
-        }
-
-        await db.users.update_one(
-            {"user_id": clerk_user_id},
-            {"$set": user_doc},
-            upsert=True
-        )
-    else:
-        # Update last_active for existing user
-        last_active = datetime.now(timezone.utc)
-        await db.users.update_one(
-            {"user_id": clerk_user_id},
-            {"$set": {"last_active": last_active}}
-        )
-        user_doc["last_active"] = last_active
-
-    if isinstance(user_doc.get("last_active"), str):
-        user_doc["last_active"] = datetime.fromisoformat(user_doc["last_active"])
-
-    # ULTRA-SENTINEL: Final override to ensure Lead Analyst has absolute Admin authority
-    if user_doc.get("email") == "utkarsh0907.edu@gmail.com":
-        user_doc["role"] = "admin"
-        user_doc["institute_id"] = "inst_IIPS"
-
-    return User(**user_doc)
+# get_current_user is now in core.auth
 
 
 
