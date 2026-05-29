@@ -11,5 +11,8 @@ class User(BaseModel):
     role: Optional[str] = None  # student, alumni, admin
     institute_id: Optional[str] = None
     department: Optional[str] = None
+    status: str = "uninitialized"
+    is_approved: bool = False
     created_at: datetime
     last_active: Optional[datetime] = None
+

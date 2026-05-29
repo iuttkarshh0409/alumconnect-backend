@@ -33,6 +33,18 @@ async def fetch_clerk_user(clerk_user_id: str) -> dict:
             raise HTTPException(status_code=401, detail="Unable to fetch Clerk user")
         return resp.json()
 
+from typing import List
+
+class RoleChecker:
+    def __init__(self, allowed_roles: List[str]):
+        self.allowed_roles = allowed_roles
+
+    async def __call__(self, request: Request) -> User:
+        user = await get_current_user(request)
+        if user.role not in self.allowed_roles:
+            raise HTTPException(status_code=403, detail="Operation not permitted")
+        return user
+
 async def get_current_user(request: Request) -> User:
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -68,6 +80,8 @@ async def get_current_user(request: Request) -> User:
         is_master_admin = email == "utkarsh0907.edu@gmail.com"
         assigned_role = "admin" if is_master_admin else (user_doc.get("role") if user_doc else None)
         assigned_inst = "inst_IIPS" if is_master_admin else (user_doc.get("institute_id") if user_doc else None)
+        assigned_status = "approved" if is_master_admin else "uninitialized"
+        assigned_approved = True if is_master_admin else False
 
         user_doc = {
             "user_id": clerk_user_id,
@@ -77,6 +91,8 @@ async def get_current_user(request: Request) -> User:
             "role": assigned_role,
             "institute_id": assigned_inst,
             "department": user_doc.get("department") if user_doc else None,
+            "status": assigned_status,
+            "is_approved": assigned_approved,
             "created_at": user_doc.get("created_at") if user_doc else datetime.now(timezone.utc),
             "last_active": datetime.now(timezone.utc),
         }
@@ -90,5 +106,13 @@ async def get_current_user(request: Request) -> User:
     if user_doc.get("email") == "utkarsh0907.edu@gmail.com":
         user_doc["role"] = "admin"
         user_doc["institute_id"] = "inst_IIPS"
+        user_doc["is_approved"] = True
+        user_doc["status"] = "approved"
+
+    if "status" not in user_doc:
+        user_doc["status"] = "uninitialized"
+    if "is_approved" not in user_doc:
+        user_doc["is_approved"] = False
 
     return User(**user_doc)
+

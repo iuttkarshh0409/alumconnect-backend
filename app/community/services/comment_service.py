@@ -25,8 +25,9 @@ async def add_comment(db: AsyncIOMotorDatabase, post_id: str, comment_data: Comm
     return comment_dict
 
 async def get_comments(db: AsyncIOMotorDatabase, post_id: str):
-    cursor = db.comments.find({"post_id": ObjectId(post_id)}).sort("created_at", 1)
+    cursor = db.comments.find({"post_id": ObjectId(post_id), "is_deleted": {"$ne": True}}).sort("created_at", 1)
     comments = await cursor.to_list(length=100)
+
     
     for c in comments:
         c["id"] = str(c["_id"])

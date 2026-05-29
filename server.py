@@ -50,12 +50,15 @@ app.add_middleware(
 )
 
 from app.community.api import posts as community_posts, comments as community_comments
+from core.admin_moderation import router as admin_router
 
 api_router = APIRouter(prefix="/api")
 
 # Community Routes
 api_router.include_router(community_posts.router, prefix="/community/posts", tags=["community"])
 api_router.include_router(community_comments.router, prefix="/community/posts", tags=["community"])
+api_router.include_router(admin_router, tags=["admin"])
+
 
 @app.get("/ping")
 def ping():
@@ -133,10 +136,16 @@ class Institute(BaseModel):
 # ===== REQUEST/RESPONSE MODELS =====
 class SetupProfileRequest(BaseModel):
     role: str
-    institute_id: str
-    department: str
-    graduation_year: int
+    institute_id: Optional[str] = None
+    department: Optional[str] = None
+    graduation_year: Optional[int] = None
     bio: Optional[str] = None
+    verification_type: Optional[str] = None
+    verification_value: Optional[str] = None
+    designation: Optional[str] = None
+    access_code: Optional[str] = None
+    name: Optional[str] = None
+
 
 class AlumniProfileUpdate(BaseModel):
     company: Optional[str] = None
@@ -237,48 +246,52 @@ async def logout(request: Request, response: Response, session_token: Optional[s
 async def setup_profile(request: Request, profile_data: SetupProfileRequest, session_token: Optional[str] = Cookie(None)):
     user = await get_current_user(request)
     
-    if user.role:
+    if user.status != "uninitialized":
         return JSONResponse(
             status_code=200, 
             content={
-                "message": "Profile already set up",
-                "role": user.role
+                "message": "Profile already set up or pending approval",
+                "role": user.role,
+                "status": user.status
                 }
         )
     
-    await db.users.update_one(
-        {"user_id": user.user_id},
-        {"$set": {
-            "role": profile_data.role,
-            "institute_id": profile_data.institute_id,
-            "department": profile_data.department
-        }}
-    )
-    
-    if profile_data.role == "alumni":
-        alumni_profile = {
-            "user_id": user.user_id,
-            "institute_id": profile_data.institute_id,
-            "department": profile_data.department,
-            "graduation_year": profile_data.graduation_year,
-            "skills": [],
-            "is_verified": False,
-            "is_claimed": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "bio": profile_data.bio
+    if profile_data.role == "admin":
+        if profile_data.access_code != "LV088RRLO":
+            raise HTTPException(status_code=400, detail="Invalid administrator access code")
+        
+        update_doc = {
+            "role": "admin",
+            "designation": profile_data.designation,
+            "status": "approved",
+            "is_approved": True
         }
-        await db.alumni_profiles.insert_one(alumni_profile)
-    elif profile_data.role == "student":
-        student_profile = {
-            "user_id": user.user_id,
+        if profile_data.name:
+            update_doc["name"] = profile_data.name
+
+        await db.users.update_one(
+            {"user_id": user.user_id},
+            {"$set": update_doc}
+        )
+    else:
+        update_doc = {
+            "role": profile_data.role,
             "institute_id": profile_data.institute_id,
             "department": profile_data.department,
             "graduation_year": profile_data.graduation_year,
             "bio": profile_data.bio,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "verification_type": profile_data.verification_type,
+            "verification_value": profile_data.verification_value,
+            "status": "pending",
+            "is_approved": False
         }
-        await db.students.insert_one(student_profile)
+        if profile_data.name:
+            update_doc["name"] = profile_data.name
+
+        await db.users.update_one(
+            {"user_id": user.user_id},
+            {"$set": update_doc}
+        )
     
     updated_user = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
     if isinstance(updated_user.get("created_at"), str):
@@ -429,6 +442,31 @@ async def update_alumni_profile(
     
     return updated_profile
 
+class ReportAlumniRequest(BaseModel):
+    reason: str
+
+@api_router.post("/alumni/{user_id}/report")
+async def report_alumni_profile(
+    user_id: str,
+    payload: ReportAlumniRequest,
+    request: Request
+):
+    user = await get_current_user(request)
+    
+    report_id = f"rep_{uuid.uuid4().hex[:12]}"
+    report_doc = {
+        "report_id": report_id,
+        "reporter_id": user.user_id,
+        "target_alumni_id": user_id,
+        "reason": payload.reason,
+        "status": "pending_review",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.profile_reports.insert_one(report_doc)
+    return {"status": "success", "message": "Alumni profile reported successfully"}
+
+
 
 # ===== MENTORSHIP ROUTES =====
 
@@ -459,6 +497,7 @@ async def create_mentorship_request(
         "topic": request_data.topic,
         "description": request_data.description,
         "status": "pending",
+        "admin_approval_status": "pending_admin_approval",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
     }
@@ -478,11 +517,20 @@ async def get_mentorship_requests(request: Request, session_token: Optional[str]
     user = await get_current_user(request)
     
     if user.role == "student":
-        requests = await db.mentorship_requests.find({"student_id": user.user_id}, {"_id": 0}).to_list(1000)
+        requests = await db.mentorship_requests.find({"student_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     elif user.role == "alumni":
-        requests = await db.mentorship_requests.find({"mentor_id": user.user_id}, {"_id": 0}).to_list(1000)
+        requests = await db.mentorship_requests.find({"mentor_id": user.user_id, "admin_approval_status": "approved_by_admin"}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    elif user.role == "admin":
+        query = {}
+        if user.institute_id:
+            students = await db.users.find({"institute_id": user.institute_id}).to_list(5000)
+            student_ids = [s["user_id"] for s in students]
+            query["student_id"] = {"$in": student_ids}
+        requests = await db.mentorship_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     else:
-        requests = await db.mentorship_requests.find({}, {"_id": 0}).to_list(1000)
+        requests = await db.mentorship_requests.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+
     
     for req in requests:
         if isinstance(req.get("created_at"), str):
@@ -1170,10 +1218,22 @@ async def get_admin_stats(request: Request, session_token: Optional[str] = Cooki
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
-    total_users = await db.users.count_documents({"institute_id": user.institute_id})
-    total_alumni = await db.alumni_profiles.count_documents({"institute_id": user.institute_id})
-    total_students = await db.students.count_documents({"institute_id": user.institute_id})
-    total_requests = await db.mentorship_requests.count_documents({})
+    query = {}
+    if user.institute_id:
+        query["institute_id"] = user.institute_id
+        
+    total_users = await db.users.count_documents(query)
+    total_alumni = await db.alumni_profiles.count_documents(query)
+    total_students = await db.students.count_documents(query)
+    
+    # Scoped mentorship requests if scoped
+    mentor_query = {}
+    if user.institute_id:
+        # Get students in this institute
+        students_list = await db.users.find({"institute_id": user.institute_id}).to_list(5000)
+        student_ids = [s["user_id"] for s in students_list]
+        mentor_query["student_id"] = {"$in": student_ids}
+    total_requests = await db.mentorship_requests.count_documents(mentor_query)
     
     return {
         "total_users": total_users,
